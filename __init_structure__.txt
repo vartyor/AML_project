@@ -1,0 +1,38 @@
+프로젝트 디렉토리 구조
+======================
+aml_dashboard/
+├── app.py                                  ← Streamlit 진입점
+│
+├── models/
+│   └── embedding_extractor.py             ← GNN 모델 (EmbeddingExtractor)
+│
+├── loaders/
+│   └── resource_loader.py                 ← 모델/데이터 로드 + 캐싱 함수
+│
+├── analysis/
+│   └── shap_analyzer.py                   ← SHAP 해석 (ShapAnalyzer 클래스)
+│
+├── reporters/
+│   ├── ai_report_generator.py             ← Ollama SAR 보고서 생성 + 페이로드 조립
+│   └── pdf_report_generator.py            ← fpdf2 한글 PDF 생성
+│
+├── knowledge/
+│   └── rag_knowledge_base.py              ← ChromaDB RAG 지식베이스 (KnowledgeBase 클래스)
+│
+├── model/
+│   └── processed_graph_data.pt            ← 전처리된 그래프 데이터 (런타임 필요)
+├── gnn_model.pth                          ← GNN 가중치 (런타임 필요)
+├── fraud_model.pkl                        ← XGBoost 모델 (런타임 필요)
+├── NanumGothic.ttf                        ← 한글 폰트 (런타임 필요)
+└── NanumGothicBold.ttf                    ← 한글 굵은 폰트 (런타임 필요)
+
+모듈 의존 관계
+==============
+app.py
+  ├── loaders/resource_loader.py
+  │     └── models/embedding_extractor.py
+  ├── analysis/shap_analyzer.py
+  ├── reporters/ai_report_generator.py
+  └── reporters/pdf_report_generator.py
+
+knowledge/rag_knowledge_base.py  (독립 모듈 — app.py에 미연결, 별도 사용)
