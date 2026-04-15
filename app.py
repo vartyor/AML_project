@@ -8,9 +8,13 @@ app.py
     analysis/shap_analyzer.py        → SHAP 해석
     reporters/ai_report_generator.py → SAR JSON 조립 + Ollama 호출
     reporters/pdf_report_generator.py→ PDF 생성 (TTF 없이 내장 폰트 사용)
+    knowledge/rag_knowledge_base.py  → KoFIU 법령·지침 RAG 검색 (Phase 2)
 
 실행:
     streamlit run app.py
+
+사전 준비 (최초 1회):
+    ollama pull nomic-embed-text   ← RAG용 로컬 임베딩 모델
 """
 
 import json
@@ -18,16 +22,24 @@ import json
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import requests
 import shap
 import streamlit as st
 
 from analysis.shap_analyzer import ShapAnalyzer
+from knowledge.rag_knowledge_base import KnowledgeBase
 from loaders.resource_loader import (
     get_all_embeddings_cached,
     get_sorted_test_nodes,
     load_resources,
 )
-from reporters.ai_report_generator import build_sar_payload, generate_ai_report
+from reporters.ai_report_generator import (
+    _strip_rag_from_output,
+    build_sar_payload,
+    generate_ai_report,
+    stream_ai_report,
+)
+from reporters.sar_template import assemble_sar_template
 from reporters.pdf_report_generator import create_pdf_report
 
 # ======================================================================
@@ -48,6 +60,29 @@ risk_df = get_sorted_test_nodes(
 )
 high_risk_indices = risk_df["node_idx"].tolist()
 
+# ── RAG 지식베이스 초기화 (캐싱) ─────────────────────────────────────
+@st.cache_resource(show_spinner="📚 KoFIU 지식베이스 로딩 중...")
+def load_knowledge_base() -> KnowledgeBase:
+    """KnowledgeBase를 한 번만 초기화하고 PDF를 벡터화합니다."""
+    kb = KnowledgeBase(
+        pdf_directory="knowledge_base",
+        persist_dir="chroma_db",
+        embed_model="nomic-embed-text",
+    )
+    kb.build()
+    return kb
+
+try:
+    knowledge_base = load_knowledge_base()
+    _rag_available = True
+except Exception as _rag_err:
+    knowledge_base = None
+    _rag_available = False
+    st.sidebar.warning(
+        f"⚠️ RAG 지식베이스 초기화 실패: {_rag_err}\n\n"
+        "`ollama pull nomic-embed-text` 실행 후 앱을 재시작하세요."
+    )
+
 # ======================================================================
 # 2. 세션 상태 초기화
 # ======================================================================
@@ -57,6 +92,8 @@ if "ai_report_content" not in st.session_state:
     st.session_state.ai_report_content = None
 if "current_node" not in st.session_state:
     st.session_state.current_node = None
+if "rag_context_used" not in st.session_state:
+    st.session_state.rag_context_used = ""
 
 # ======================================================================
 # 3. 사이드바 — 노드 선택
@@ -176,23 +213,70 @@ with st.spinner("분석 중......"):
     st.subheader("AI 자동 생성 의심거래보고서(SAR)")
 
     if st.button("🚀 AI 전문 보고서 생성(Llama 3.1)"):
-        with st.spinner("AI가 분석 데이터를 검토하여 보고서를 작성 중입니다..."):
-            st.session_state.ai_report_content = generate_ai_report(sar_json_str)
 
-    # 4-7. 보고서 표시 및 다운로드
+        # ── RAG 컨텍스트 검색 ──────────────────────────────────────────
+        rag_context = ""
+        if _rag_available and knowledge_base is not None:
+            risk_level_str = sar_payload["report_context"]["risk_level"]
+            top_factors    = sar_payload["key_risk_factors"]
+            has_network    = any("GNN" in f["특징명"] for f in top_factors)
+            rag_query = (
+                f"분산 송금 네트워크 자금세탁 의심거래 {risk_level_str} 보고 기준 및 조치"
+                if has_network
+                else f"자금세탁 의심거래 {risk_level_str} 보고 의무 징후 판단"
+            )
+            try:
+                rag_context = knowledge_base.format_context(
+                    query=rag_query, k=3, score_threshold=0.3
+                )
+            except Exception as _e:
+                st.warning(f"RAG 검색 중 오류 발생: {_e}")
+
+        # ── Streaming 보고서 생성 (진행 상태 표시) ────────────────────
+        progress_placeholder = st.empty()
+        raw_text  = ""
+        error_msg = ""
+
+        try:
+            for token in stream_ai_report(sar_json_str, rag_context=rag_context):
+                raw_text += token
+                # 진행 상태만 표시 (섹션 마커 포함 원문)
+                progress_placeholder.info(
+                    f"⏳ AI 분석 중... ({len(raw_text)}자 생성됨)\n\n"
+                    f"완료 후 통일된 보고서 양식으로 자동 변환됩니다."
+                )
+        except requests.exceptions.ConnectionError:
+            error_msg = "❌ Ollama 서버에 연결할 수 없습니다. localhost:11434 가 실행 중인지 확인하세요."
+        except Exception as _exc:
+            error_msg = f"❌ 보고서 생성 오류: {_exc}"
+
+        progress_placeholder.empty()
+
+        if error_msg:
+            st.error(error_msg)
+            final_report = error_msg
+        else:
+            # ── RAG 잔여 제거 후 고정 양식 조립 ──────────────────────
+            clean_raw    = _strip_rag_from_output(raw_text)
+            clean_raw    = clean_raw.replace("があります", "가 있습니다").replace("必要があります", "필요가 있습니다")
+            final_report = assemble_sar_template(clean_raw, sar_payload)
+
+            # 완성된 양식 렌더링
+            st.markdown(
+                "<div style='background:#f0f2f6;padding:20px;border-radius:8px;"
+                "border-left:5px solid #ff4b4b;color:#1f2937;line-height:1.6;"
+                "font-family:monospace;white-space:pre-wrap;'>"
+                + final_report.replace("<", "&lt;").replace(">", "&gt;")
+                + "</div>",
+                unsafe_allow_html=True,
+            )
+
+        st.session_state.ai_report_content = final_report
+        st.session_state.rag_context_used  = rag_context
+
+    # 4-7. 다운로드 버튼 (스트리밍 완료 후 표시)
     if st.session_state.ai_report_content:
         st.markdown("---")
-        formatted_report = st.session_state.ai_report_content.replace("\n", "<br>")
-        st.markdown(
-            f"""
-            <div style="background-color: #f0f2f6; padding: 25px; border-radius: 10px;
-                        border-left: 5px solid #ff4b4b; color: #1f2937; line-height: 1.6;">
-                {formatted_report}
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
         dl_col1, dl_col2 = st.columns(2)
         with dl_col1:
             st.download_button(
@@ -217,6 +301,18 @@ with st.spinner("분석 중......"):
                     mime="application/pdf",
                 )
 
-    # 4-8. 원본 JSON 보기
+    # 4-8. RAG 참조 컨텍스트 보기
+    if st.session_state.rag_context_used:
+        with st.expander("📚 보고서 작성에 참조된 KoFIU 법령·지침 (RAG)"):
+            st.markdown(
+                f"<pre style='font-size:0.8rem; white-space:pre-wrap;'>"
+                f"{st.session_state.rag_context_used}</pre>",
+                unsafe_allow_html=True,
+            )
+    elif _rag_available:
+        with st.expander("📚 RAG 컨텍스트"):
+            st.info("유사도 임계값(0.3)을 초과하는 관련 법령 구절이 없습니다.")
+
+    # 4-9. 원본 JSON 보기
     with st.expander("📝 원본 분석 JSON 데이터 보기"):
         st.code(sar_json_str, language="json")

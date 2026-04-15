@@ -7,3 +7,6 @@ shap
 torch
 torch-geometric
 matplotlib
+requests
+PyPDF2
+chromadb
