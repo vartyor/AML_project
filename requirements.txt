@@ -10,3 +10,8 @@ matplotlib
 requests
 PyPDF2
 chromadb
+# ── Phase 3: GraphRAG ──────────────────────────────
+neo4j>=5.0.0
+langchain-neo4j>=0.3.0
+langchain-community>=0.3.1
+langchain-core>=0.3.0

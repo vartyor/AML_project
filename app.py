@@ -1,56 +1,37 @@
-"""
-app.py
--------
-자금 세탁 거점 분석 대시보드 — Streamlit 메인 진입점.
-
-각 기능 모듈을 조합하여 UI를 구성합니다:
-    loaders/resource_loader.py       → 모델 및 데이터 로드
-    analysis/shap_analyzer.py        → SHAP 해석
-    reporters/ai_report_generator.py → SAR JSON 조립 + Ollama 호출
-    reporters/pdf_report_generator.py→ PDF 생성 (TTF 없이 내장 폰트 사용)
-    knowledge/rag_knowledge_base.py  → KoFIU 법령·지침 RAG 검색 (Phase 2)
-
-실행:
-    streamlit run app.py
-
-사전 준비 (최초 1회):
-    ollama pull nomic-embed-text   ← RAG용 로컬 임베딩 모델
-"""
-
-import json
+import requests
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import requests
 import shap
 import streamlit as st
+import streamlit.components.v1 as components
 
+from analysis.network_visualizer import build_fund_flow_network, get_network_stats
 from analysis.shap_analyzer import ShapAnalyzer
-from knowledge.rag_knowledge_base import KnowledgeBase
 from loaders.resource_loader import (
     get_all_embeddings_cached,
     get_sorted_test_nodes,
     load_resources,
 )
+from loaders.knowledge_loader import init_knowledge_resources
 from reporters.ai_report_generator import (
-    _strip_rag_from_output,
+    _humanize_feature_value,
     build_sar_payload,
-    generate_ai_report,
-    stream_ai_report,
 )
-from reporters.sar_template import assemble_sar_template
+from reporters.context_builder import ContextBuilder
 from reporters.pdf_report_generator import create_pdf_report
+from reporters.report_runner import ReportRunner
 
-# ======================================================================
+
 # 0. 페이지 설정
-# ======================================================================
+
 st.set_page_config(page_title="자금 세탁 경로 탐지 시스템", layout="wide")
 st.title("🛡️ 자금 세탁 거점 분석 대시보드")
 
-# ======================================================================
-# 1. 리소스 로드 (캐싱)
-# ======================================================================
+
+# 1. 모델·그래프 데이터 로드 (캐싱)
+
 graph_dict, extractor, xgb_model, all_feature_names = load_resources()
 all_embs_cached = get_all_embeddings_cached(
     extractor, graph_dict["x"], graph_dict["edge_index"]
@@ -60,31 +41,33 @@ risk_df = get_sorted_test_nodes(
 )
 high_risk_indices = risk_df["node_idx"].tolist()
 
-# ── RAG 지식베이스 초기화 (캐싱) ─────────────────────────────────────
-@st.cache_resource(show_spinner="📚 KoFIU 지식베이스 로딩 중...")
-def load_knowledge_base() -> KnowledgeBase:
-    """KnowledgeBase를 한 번만 초기화하고 PDF를 벡터화합니다."""
-    kb = KnowledgeBase(
-        pdf_directory="knowledge_base",
-        persist_dir="chroma_db",
-        embed_model="nomic-embed-text",
-    )
-    kb.build()
-    return kb
 
-try:
-    knowledge_base = load_knowledge_base()
-    _rag_available = True
-except Exception as _rag_err:
-    knowledge_base = None
-    _rag_available = False
+# 2. 지식 리소스 초기화 (텍스트 RAG + GraphRAG)
+
+kr = init_knowledge_resources()
+
+# 사이드바 상태 표시
+if kr.rag_error:
     st.sidebar.warning(
-        f"⚠️ RAG 지식베이스 초기화 실패: {_rag_err}\n\n"
+        f"⚠️ 텍스트 RAG 초기화 실패: {kr.rag_error}\n\n"
         "`ollama pull nomic-embed-text` 실행 후 앱을 재시작하세요."
     )
+if kr.graph_available:
+    st.sidebar.success("🗄️ Neo4j GraphRAG 연결됨")
+else:
+    st.sidebar.info("ℹ️ Neo4j 미연결 — 텍스트 RAG만 사용")
+
+# 공유 객체 조립
+context_builder = ContextBuilder(
+    knowledge_base  = kr.knowledge_base,
+    graph_retriever = kr.graph_retriever,
+    rag_available   = kr.rag_available,
+    graph_available = kr.graph_available,
+)
+report_runner = ReportRunner(context_builder)
 
 # ======================================================================
-# 2. 세션 상태 초기화
+# 3. 세션 상태 초기화
 # ======================================================================
 if "analysis_done" not in st.session_state:
     st.session_state.analysis_done = False
@@ -94,9 +77,11 @@ if "current_node" not in st.session_state:
     st.session_state.current_node = None
 if "rag_context_used" not in st.session_state:
     st.session_state.rag_context_used = ""
+if "graph_context_used" not in st.session_state:
+    st.session_state.graph_context_used = ""
 
 # ======================================================================
-# 3. 사이드바 — 노드 선택
+# 4. 사이드바 — 노드 선택
 # ======================================================================
 with st.sidebar:
     st.header("⚙️ 분석 설정")
@@ -112,10 +97,13 @@ with st.sidebar:
         format_func=format_node_label,
     )
 
+    # 노드가 바뀌면 이전 분석 결과 전체 초기화
     if selected_idx != st.session_state.current_node:
-        st.session_state.analysis_done = False
-        st.session_state.ai_report_content = None
-        st.session_state.current_node = selected_idx
+        st.session_state.analysis_done      = False
+        st.session_state.ai_report_content  = None
+        st.session_state.current_node       = selected_idx
+        st.session_state.rag_context_used   = ""
+        st.session_state.graph_context_used = ""
 
     analyze_btn = st.button("🔍 상세 분석 실행")
 
@@ -123,7 +111,7 @@ if analyze_btn:
     st.session_state.analysis_done = True
 
 # ======================================================================
-# 4. 메인 분석 영역
+# 5. 메인 분석 영역
 # ======================================================================
 if not st.session_state.analysis_done:
     st.write(
@@ -133,21 +121,20 @@ if not st.session_state.analysis_done:
     st.stop()
 
 with st.spinner("분석 중......"):
-    # 4-1. 임베딩 인덱싱 + XGBoost 예측
-    node_emb = all_embs_cached[selected_idx].reshape(1, -1)
+    # 5-1. 임베딩 인덱싱 + XGBoost 예측
+    node_emb  = all_embs_cached[selected_idx].reshape(1, -1)
     node_orig = graph_dict["x"][selected_idx][-10:].reshape(1, -1).numpy()
-    X_input = np.hstack([node_emb, node_orig])
-    X_input_df = pd.DataFrame(X_input, columns=all_feature_names)
-    prob = xgb_model.predict_proba(X_input)[0][1]
+    X_input   = np.hstack([node_emb, node_orig])
+    prob      = xgb_model.predict_proba(X_input)[0][1]
 
-    # 4-2. SHAP 분석
+    # 5-2. SHAP 분석
     analyzer = ShapAnalyzer(xgb_model)
     analyzer.build_explainer(X_input)
     if analyzer.is_kernel:
         st.warning("TreeExplainer 초기화 실패 — KernelExplainer로 대체 실행 중입니다.")
     shap_values = analyzer.compute_shap_values(X_input)
 
-    # 4-3. 메트릭 카드
+    # 5-3. 메트릭 카드
     c1, c2, c3 = st.columns(3)
     c1.metric("선택된 노드", selected_idx)
     c2.metric("자금 세탁 통로 의심 점수", f"{prob:.2%}")
@@ -160,7 +147,7 @@ with st.spinner("분석 중......"):
 
     st.divider()
 
-    # 4-4. SHAP 시각화
+    # 5-4. SHAP 시각화 + 피처 테이블
     st.write("### 📊 판단 근거 분석")
     top_feature = analyzer.most_influential_feature(shap_values, all_feature_names)
     st.info(f"#### 💡 분석 핵심 요약: 가장 큰 영향을 준 요인은 **'{top_feature}'** 입니다.")
@@ -183,7 +170,20 @@ with st.spinner("분석 중......"):
         st.write("#### 2. 원본 피처 데이터 정보")
         orig_feature_names = all_feature_names[-10:]
         orig_df = pd.DataFrame(node_orig, columns=orig_feature_names)
-        st.table(orig_df.T.rename(columns={0: "값"}))
+
+        # z-score 수치 + 수준 레이블을 한 열에 함께 표시
+        readable_rows = []
+        for feat in orig_feature_names:
+            z_val = float(orig_df[feat].iloc[0])
+            human = _humanize_feature_value(z_val, feat)
+            readable_rows.append({
+                "피처명":       feat,
+                "수치 (z점수)": human["z점수"],
+                "수준":         f"{human['수준']}  ({human['z점수']:+.4f})",
+                "의미":         human["설명"],
+            })
+        readable_df = pd.DataFrame(readable_rows).set_index("피처명")
+        st.dataframe(readable_df, use_container_width=True)
 
     st.success(
         f"""
@@ -195,52 +195,88 @@ with st.spinner("분석 중......"):
         """
     )
 
-    # 4-5. SAR 페이로드 조립
+    # 5-5. 자금 흐름 네트워크 시각화 (pyvis)
+    st.divider()
+    st.write("### 🕸️ 자금 흐름 네트워크 시각화")
+    st.caption(
+        "**실선**: 실제 송금 거래 (방향 = 자금 흐름) &nbsp;·&nbsp; "
+        "**점선**: GNN 임베딩 유사 패턴 계좌 (동일 세탁 링 탐지) &nbsp;|&nbsp; "
+        "🟡 분석 대상 · 🔴 사기 · 🔵 정상 · 보라 테두리 = 패턴 유사 계좌 &nbsp;|&nbsp; "
+        "마우스 오버로 상세 정보 확인"
+    )
+
+    with st.spinner("네트워크 그래프 생성 중..."):
+        try:
+            net_stats = get_network_stats(
+                selected_idx=selected_idx,
+                graph_dict=graph_dict,
+                risk_df=risk_df,
+                all_embs=all_embs_cached,
+                hop=2,
+                max_transaction_nodes=30,
+                max_similarity_nodes=30,
+            )
+            sc1, sc2, sc3, sc4, sc5 = st.columns(5)
+            sc1.metric("총 노드 수",    f"{net_stats['total_nodes']}개")
+            sc2.metric("실거래 노드",   f"{net_stats['tx_nodes']}개",
+                        help="실제 거래로 연결된 계좌")
+            sc3.metric("패턴 유사 노드", f"{net_stats['sim_nodes']}개",
+                        help="GNN 임베딩 공간에서 유사한 행동 패턴을 가진 계좌")
+            sc4.metric("사기 노드 수",  f"{net_stats['fraud_nodes']}개",
+                        delta=f"정상 {net_stats['normal_nodes']}개",
+                        delta_color="inverse")
+            sc5.metric("최대 거래 금액",
+                        f"₩{net_stats['max_amount_original']:,}",
+                        help="그래프 내 실거래 최대 금액 (원래 값)")
+
+            net_html = build_fund_flow_network(
+                selected_idx=selected_idx,
+                graph_dict=graph_dict,
+                risk_df=risk_df,
+                all_embs=all_embs_cached,
+                hop=2,
+                max_transaction_nodes=30,
+                max_similarity_nodes=30,
+                height="560px",
+            )
+            components.html(net_html, height=590, scrolling=False)
+
+        except Exception as _net_err:
+            st.warning(f"네트워크 시각화 생성 실패: {_net_err}")
+
+    # 5-6. SAR 페이로드 조립
     st.divider()
     st.write("### 📝 SAR 보고서 작성을 위한 데이터 추출")
     orig_df_dict = orig_df.to_dict(orient="records")[0]
     sar_payload, sar_json_str = build_sar_payload(
-        selected_idx=selected_idx,
-        prob=prob,
-        shap_values=shap_values,
-        X_input=X_input,
-        all_feature_names=all_feature_names,
-        orig_df_dict=orig_df_dict,
+        selected_idx      = selected_idx,
+        prob              = prob,
+        shap_values       = shap_values,
+        X_input           = X_input,
+        all_feature_names = all_feature_names,
+        orig_df_dict      = orig_df_dict,
     )
 
-    # 4-6. AI SAR 보고서 생성
+    # 5-7. AI SAR 보고서 생성
     st.divider()
     st.subheader("AI 자동 생성 의심거래보고서(SAR)")
 
     if st.button("🚀 AI 전문 보고서 생성(Llama 3.1)"):
 
-        # ── RAG 컨텍스트 검색 ──────────────────────────────────────────
-        rag_context = ""
-        if _rag_available and knowledge_base is not None:
-            risk_level_str = sar_payload["report_context"]["risk_level"]
-            top_factors    = sar_payload["key_risk_factors"]
-            has_network    = any("GNN" in f["특징명"] for f in top_factors)
-            rag_query = (
-                f"분산 송금 네트워크 자금세탁 의심거래 {risk_level_str} 보고 기준 및 조치"
-                if has_network
-                else f"자금세탁 의심거래 {risk_level_str} 보고 의무 징후 판단"
+        # ── ① 컨텍스트 조회 (ReportRunner → ContextBuilder) ─────────
+        with st.spinner("🔍 RAG·GraphRAG 컨텍스트 조회 중..."):
+            rag_context, graph_context = report_runner.build_contexts(
+                sar_payload, selected_idx
             )
-            try:
-                rag_context = knowledge_base.format_context(
-                    query=rag_query, k=3, score_threshold=0.3
-                )
-            except Exception as _e:
-                st.warning(f"RAG 검색 중 오류 발생: {_e}")
 
-        # ── Streaming 보고서 생성 (진행 상태 표시) ────────────────────
+        # ── ② 스트리밍 보고서 생성 ──────────────────────────────────
         progress_placeholder = st.empty()
         raw_text  = ""
         error_msg = ""
 
         try:
-            for token in stream_ai_report(sar_json_str, rag_context=rag_context):
+            for token in report_runner.stream(sar_json_str, rag_context, graph_context):
                 raw_text += token
-                # 진행 상태만 표시 (섹션 마커 포함 원문)
                 progress_placeholder.info(
                     f"⏳ AI 분석 중... ({len(raw_text)}자 생성됨)\n\n"
                     f"완료 후 통일된 보고서 양식으로 자동 변환됩니다."
@@ -256,12 +292,9 @@ with st.spinner("분석 중......"):
             st.error(error_msg)
             final_report = error_msg
         else:
-            # ── RAG 잔여 제거 후 고정 양식 조립 ──────────────────────
-            clean_raw    = _strip_rag_from_output(raw_text)
-            clean_raw    = clean_raw.replace("があります", "가 있습니다").replace("必要があります", "필요가 있습니다")
-            final_report = assemble_sar_template(clean_raw, sar_payload)
+            # ── ③ RAG 에코 제거 + 양식 조립 (ReportRunner) ──────────
+            final_report = report_runner.finalize(raw_text, sar_payload, graph_context)
 
-            # 완성된 양식 렌더링
             st.markdown(
                 "<div style='background:#f0f2f6;padding:20px;border-radius:8px;"
                 "border-left:5px solid #ff4b4b;color:#1f2937;line-height:1.6;"
@@ -271,48 +304,76 @@ with st.spinner("분석 중......"):
                 unsafe_allow_html=True,
             )
 
-        st.session_state.ai_report_content = final_report
-        st.session_state.rag_context_used  = rag_context
+        # 세션에 결과 저장
+        st.session_state.ai_report_content  = final_report
+        st.session_state.rag_context_used   = rag_context
+        st.session_state.graph_context_used = graph_context
 
-    # 4-7. 다운로드 버튼 (스트리밍 완료 후 표시)
+    # 5-8. 다운로드 버튼
     if st.session_state.ai_report_content:
         st.markdown("---")
         dl_col1, dl_col2 = st.columns(2)
         with dl_col1:
             st.download_button(
-                label="📄 보고서 다운로드(TXT)",
-                data=st.session_state.ai_report_content,
-                file_name=f"SAR_Report_Node_{selected_idx}.txt",
-                mime="text/plain",
+                label     = "📄 보고서 다운로드(TXT)",
+                data      = st.session_state.ai_report_content,
+                file_name = f"SAR_Report_Node_{selected_idx}.txt",
+                mime      = "text/plain",
             )
         with dl_col2:
             pdf_result = create_pdf_report(
-                report_text=st.session_state.ai_report_content,
-                node_id=selected_idx,
-                risk_level=risk_level,
+                report_text = st.session_state.ai_report_content,
+                node_id     = selected_idx,
+                risk_level  = risk_level,
             )
-            if isinstance(pdf_result, str):  # 성공=bytes, 실패=str(에러메시지)
+            if isinstance(pdf_result, str):
                 st.error(pdf_result)
             else:
                 st.download_button(
-                    label="📕 PDF 보고서 다운로드",
-                    data=pdf_result,
-                    file_name=f"SAR_Report_{selected_idx}.pdf",
-                    mime="application/pdf",
+                    label     = "📕 PDF 보고서 다운로드",
+                    data      = pdf_result,
+                    file_name = f"SAR_Report_{selected_idx}.pdf",
+                    mime      = "application/pdf",
                 )
 
-    # 4-8. RAG 참조 컨텍스트 보기
-    if st.session_state.rag_context_used:
-        with st.expander("📚 보고서 작성에 참조된 KoFIU 법령·지침 (RAG)"):
-            st.markdown(
-                f"<pre style='font-size:0.8rem; white-space:pre-wrap;'>"
-                f"{st.session_state.rag_context_used}</pre>",
-                unsafe_allow_html=True,
-            )
-    elif _rag_available:
-        with st.expander("📚 RAG 컨텍스트"):
-            st.info("유사도 임계값(0.3)을 초과하는 관련 법령 구절이 없습니다.")
+    # 5-9. 참조 컨텍스트 패널 — 텍스트 RAG(왼쪽) + GraphRAG(오른쪽)
+    st.markdown("---")
+    ref_col1, ref_col2 = st.columns(2)
 
-    # 4-9. 원본 JSON 보기
+    with ref_col1:
+        if st.session_state.rag_context_used:
+            with st.expander("📚 참조된 KoFIU 법령·지침 (텍스트 RAG)"):
+                st.markdown(
+                    "<pre style='font-size:0.8rem; white-space:pre-wrap;'>"
+                    + st.session_state.rag_context_used
+                    + "</pre>",
+                    unsafe_allow_html=True,
+                )
+        elif kr.rag_available:
+            with st.expander("📚 텍스트 RAG 컨텍스트"):
+                st.info("유사도 임계값(0.3)을 초과하는 관련 법령 구절이 없습니다.")
+
+    with ref_col2:
+        if st.session_state.graph_context_used:
+            with st.expander("🗄️ 거래 네트워크 분석 결과 (GraphRAG)"):
+                st.markdown(
+                    "<pre style='font-size:0.8rem; white-space:pre-wrap;'>"
+                    + st.session_state.graph_context_used
+                    + "</pre>",
+                    unsafe_allow_html=True,
+                )
+        elif kr.graph_available:
+            with st.expander("🗄️ GraphRAG 컨텍스트"):
+                st.info("Neo4j에서 해당 노드의 네트워크 데이터를 찾을 수 없습니다.")
+        else:
+            with st.expander("🗄️ GraphRAG (Neo4j 미연결)"):
+                st.info(
+                    "Neo4j가 연결되지 않아 그래프 네트워크 분석을 건너뜁니다.\n\n"
+                    "활성화하려면:\n"
+                    "1. Neo4j Desktop에서 인스턴스를 시작하세요.\n"
+                    "2. `python tools/neo4j_loader.py` 를 실행하세요."
+                )
+
+    # 5-10. 원본 JSON 보기
     with st.expander("📝 원본 분석 JSON 데이터 보기"):
         st.code(sar_json_str, language="json")
