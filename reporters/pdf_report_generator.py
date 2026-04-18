@@ -1,37 +1,3 @@
-"""
-reporters/pdf_report_generator.py
------------------------------------
-fpdf2 전용 한글 SAR PDF 보고서 생성 모듈.
-
-[환경 전제]
-    pip uninstall fpdf -y       ← 구버전 제거 필수
-    pip install fpdf2           ← fpdf2만 설치
-
-    구버전 fpdf와 fpdf2가 공존하면 from fpdf import FPDF가 구버전을 가져와
-    txt= / ln= API 충돌 및 cp949 에러가 연쇄 발생했던 근본 원인.
-    fpdf2 단독 환경에서는 해당 문제 없음.
-
-[한글 폰트]
-    Google Fonts 버전 NanumGothic을 사용합니다.
-    구버전(네이버 직배포) NanumGothic.ttf 는 name 테이블에 cp949 메타데이터가
-    존재해 fpdf2와 호환되지 않으므로 반드시 Google Fonts 버전을 사용하세요.
-
-    필요 파일 (프로젝트 루트):
-        NanumGothic-Regular.ttf
-        NanumGothic-Bold.ttf
-
-    다운로드:
-        https://fonts.google.com/specimen/Nanum+Gothic
-        https://github.com/google/fonts/tree/main/ofl/nanumgothic
-
-[fpdf2 최신 API 규칙]
-    cell(w, h, text=..., border=0, align="L", fill=False,
-         new_x=XPos.RIGHT, new_y=YPos.TOP)
-    multi_cell(w, h, text=..., border=0, align="J", fill=False,
-               new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-    ※ txt= / ln= 는 fpdf2 v2.7.6 / v2.5.2 이후 완전 제거됨
-"""
-
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -81,16 +47,14 @@ def create_pdf_report(
         str   : "PDF 생성 에러: ..." 메시지 (실패)
     """
     try:
-        # ------------------------------------------------------------------
         # 0. 폰트 파일 사전 검증
-        # ------------------------------------------------------------------
+        
         font_error = _check_fonts()
         if font_error:
             return f"폰트 로드 에러: {font_error}"
 
-        # ------------------------------------------------------------------
         # 1. FPDF 인스턴스 생성 및 폰트 등록
-        # ------------------------------------------------------------------
+        
         pdf = FPDF()
         pdf.add_page()
         pdf.set_margins(left=15, top=15, right=15)
@@ -99,9 +63,8 @@ def create_pdf_report(
         pdf.add_font("Nanum",  style="", fname=FONT_REGULAR)
         pdf.add_font("NanumB", style="", fname=FONT_BOLD)
 
-        # ------------------------------------------------------------------
         # 2. 상단 보안 헤더
-        # ------------------------------------------------------------------
+        
         pdf.set_font("Nanum", size=9)
         pdf.set_text_color(150, 150, 150)
         pdf.cell(
@@ -113,9 +76,8 @@ def create_pdf_report(
         pdf.set_text_color(0, 0, 0)
         pdf.ln(5)
 
-        # ------------------------------------------------------------------
         # 3. 제목 및 문서번호
-        # ------------------------------------------------------------------
+        
         pdf.set_font("NanumB", size=20)
         pdf.cell(
             0, 15,
@@ -135,9 +97,8 @@ def create_pdf_report(
         pdf.set_text_color(0, 0, 0)
         pdf.ln(10)
 
-        # ------------------------------------------------------------------
         # 4. 핵심 요약 표
-        # ------------------------------------------------------------------
+        
         pdf.set_fill_color(240, 240, 240)
         table_rows = [
             ("분석 대상 계좌", str(node_id)),
@@ -162,9 +123,8 @@ def create_pdf_report(
 
         pdf.ln(10)
 
-        # ------------------------------------------------------------------
         # 5. 보고서 본문
-        # ------------------------------------------------------------------
+        
         pdf.set_font("Nanum", size=11)
         pdf.multi_cell(
             0, 8,
@@ -172,9 +132,8 @@ def create_pdf_report(
             new_x=XPos.LMARGIN, new_y=YPos.NEXT,
         )
 
-        # ------------------------------------------------------------------
         # 6. 하단 법적 고지
-        # ------------------------------------------------------------------
+        
         pdf.ln(20)
         pdf.set_draw_color(180, 180, 180)
         pdf.line(15, pdf.get_y(), 195, pdf.get_y())
