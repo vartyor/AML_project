@@ -1,35 +1,3 @@
-"""
-knowledge/rag_knowledge_base.py
----------------------------------
-LangChain + Ollama 임베딩 + ChromaDB 기반 로컬 RAG 지식베이스 모듈.
-
-[LangChain 스택]
-  - langchain_community.embeddings.OllamaEmbeddings  → 로컬 임베딩
-  - langchain_community.vectorstores.Chroma          → 벡터스토어
-  - langchain_text_splitters.RecursiveCharacterTextSplitter → 청킹
-  - langchain_core.documents.Document                → 문서 표현
-
-[호환성 처리]
-  - chromadb 1.5.7 호환을 위해 chromadb.PersistentClient를
-    직접 생성 후 LangChain Chroma의 client= 파라미터로 전달.
-    (LangChain 내부의 deprecated chromadb.Client() 호출 우회)
-  - OllamaEmbeddings 는 langchain_community 0.3.1 이후 deprecated 이나
-    langchain_ollama 미설치 환경에서 동작 가능한 유일한 옵션으로 사용.
-
-[PDF 텍스트 추출 한계 및 대응]
-  벡터 아웃라인 PDF(KoFIU 연차보고서 등)는 PyPDF2로 추출 불가.
-  → tools/extract_pdf_to_txt.py 로 TXT 변환 후 knowledge_base/에 저장.
-  → 같은 이름의 .txt 파일이 있으면 PDF보다 우선 처리.
-
-사전 준비:
-    ollama pull nomic-embed-text   ← 로컬 임베딩 모델 (최초 1회)
-
-사용 예:
-    kb = KnowledgeBase(pdf_directory="knowledge_base")
-    kb.build()
-    context = kb.format_context("자금세탁 의심 패턴")
-"""
-
 from __future__ import annotations
 
 import warnings
@@ -48,31 +16,15 @@ from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 
-# ======================================================================
 # 상수
-# ======================================================================
+
 _CHUNK_SIZE    = 500   # 청크당 최대 문자 수
 _CHUNK_OVERLAP = 100   # 청크 간 겹침 문자 수
 _COLLECTION    = "aml_knowledge"
 
 
-# ======================================================================
 # KnowledgeBase 클래스
-# ======================================================================
-
-class KnowledgeBase:
-    """
-    LangChain 기반 RAG 지식베이스 클래스.
-
-    Args:
-        pdf_directory   (str): PDF/TXT 파일이 저장된 디렉토리 경로
-        persist_dir     (str): ChromaDB 영속 저장 경로 (default: "chroma_db")
-        embed_model     (str): Ollama 임베딩 모델명 (default: "nomic-embed-text")
-        ollama_base_url (str): Ollama 서버 주소 (default: "http://localhost:11434")
-        chunk_size      (int): 청크당 최대 문자 수 (default: 500)
-        chunk_overlap   (int): 청크 간 겹침 문자 수 (default: 100)
-    """
-
+class KnowledgeBase: # Langchain 기반 RAG 지식베이스 클래스
     def __init__(
         self,
         pdf_directory: str = "knowledge_base",
@@ -99,12 +51,10 @@ class KnowledgeBase:
             length_function=len,
         )
 
-    # ------------------------------------------------------------------
-    # 내부 초기화 (지연 로딩)
-    # ------------------------------------------------------------------
 
-    def _get_embeddings(self) -> OllamaEmbeddings:
-        """OllamaEmbeddings 인스턴스를 반환합니다 (최초 1회 생성)."""
+    # 내부 초기화 (지연 로딩)
+
+    def _get_embeddings(self) -> OllamaEmbeddings: #OllamaEmbeddings 인스턴스를 반환(최초 1회 생성)
         if self._embeddings is None:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", DeprecationWarning)
@@ -114,15 +64,7 @@ class KnowledgeBase:
                 )
         return self._embeddings
 
-    def _get_vectorstore(self) -> LangChainChroma:
-        """
-        LangChain Chroma 벡터스토어를 반환합니다 (최초 1회 생성).
-
-        [호환성 처리]
-        chromadb.PersistentClient를 직접 생성하여 LangChain Chroma에 전달합니다.
-        이렇게 하면 LangChain 내부에서 deprecated chromadb.Client()를 호출하는
-        문제를 우회할 수 있습니다.
-        """
+    def _get_vectorstore(self) -> LangChainChroma: # LangChain Chroma 벡터스토어를 반환(최초 1회 생성)
         if self._vectorstore is None:
             chroma_client = chromadb.PersistentClient(path=self.persist_dir)
             with warnings.catch_warnings():
@@ -135,18 +77,11 @@ class KnowledgeBase:
                 )
         return self._vectorstore
 
-    # ------------------------------------------------------------------
+
     # 텍스트 추출 (정적 메서드)
-    # ------------------------------------------------------------------
 
     @staticmethod
-    def extract_text_from_pdf(pdf_path: str | Path) -> tuple[str, str]:
-        """
-        PDF에서 텍스트를 추출합니다 (페이지별 오류 허용).
-
-        Returns:
-            tuple[str, str]: (추출된 텍스트, 상태 메시지)
-        """
+    def extract_text_from_pdf(pdf_path: str | Path) -> tuple[str, str]: # PDF에서 텍스트 추출
         path = Path(pdf_path)
         try:
             reader       = PdfReader(str(path))
@@ -168,8 +103,7 @@ class KnowledgeBase:
             return "", f"예외: {e}"
 
     @staticmethod
-    def extract_text_from_txt(txt_path: str | Path) -> str:
-        """TXT 파일에서 텍스트를 읽어 반환합니다."""
+    def extract_text_from_txt(txt_path: str | Path) -> str: # TXT 파일에서 문자 반환
         path = Path(txt_path)
         for enc in ("utf-8", "utf-8-sig", "cp949", "euc-kr"):
             try:
@@ -178,29 +112,16 @@ class KnowledgeBase:
                 continue
         return ""
 
-    # ------------------------------------------------------------------
-    # 공개 메서드
-    # ------------------------------------------------------------------
 
-    def is_built(self) -> bool:
-        """ChromaDB 컬렉션에 이미 벡터화된 문서가 있는지 확인합니다."""
+    # 공개 메서드
+
+    def is_built(self) -> bool: # ChromaDB 컬렉션에 이미 벡터화된 문서가 있는지 확인
         try:
             return self._get_vectorstore()._collection.count() > 0
         except Exception:
             return False
 
-    def build(self, force: bool = False) -> None:
-        """
-        knowledge_base/ 내 문서(PDF + TXT)를 청크 단위로 벡터화하여 ChromaDB에 저장합니다.
-
-        처리 우선순위:
-          1. 같은 stem의 .txt 파일이 있으면 TXT 우선
-          2. TXT 없으면 PDF → PyPDF2 추출 시도
-          3. 둘 다 실패하면 건너뜀 (안내 메시지 출력)
-
-        Args:
-            force (bool): True면 기존 데이터 무시 후 재빌드
-        """
+    def build(self, force: bool = False) -> None: # 내 문서를 청크 단위로 벡터화해 ChromaDB에 저장
         if not force and self.is_built():
             print("[KnowledgeBase] 기존 지식베이스 감지 → 재빌드 건너뜀.")
             return
@@ -271,13 +192,6 @@ class KnowledgeBase:
         query: str,
         k: int = 3,
     ) -> list[dict]:
-        """
-        자연어 쿼리로 유사 청크를 검색합니다.
-
-        Returns:
-            list[dict]: {"text": ..., "source": ..., "score": ...} 리스트
-                        score: 0~1 (1에 가까울수록 유사)
-        """
         results: list[tuple[Document, float]] = (
             self._get_vectorstore().similarity_search_with_score(query, k=k)
         )
@@ -297,17 +211,6 @@ class KnowledgeBase:
         k: int = 3,
         score_threshold: float = 0.3,
     ) -> str:
-        """
-        검색 결과를 LLM 프롬프트 주입용 문자열로 포매팅합니다.
-
-        Args:
-            query           (str)  : 검색 쿼리
-            k               (int)  : 최대 반환 청크 수
-            score_threshold (float): 이 값 미만 청크 제외 (노이즈 방지)
-
-        Returns:
-            str: 포매팅된 컨텍스트 문자열 (결과 없으면 빈 문자열)
-        """
         results  = self.search(query, k=k)
         filtered = [r for r in results if r["score"] >= score_threshold]
 
