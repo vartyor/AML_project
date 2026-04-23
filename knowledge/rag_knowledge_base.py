@@ -9,11 +9,55 @@ from PyPDF2 import PdfReader
 # ── LangChain imports ──────────────────────────────────────────────────
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", DeprecationWarning)
-    from langchain_community.embeddings import OllamaEmbeddings
     from langchain_community.vectorstores import Chroma as LangChainChroma
 
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+
+def _get_embeddings_backend(
+    embed_model: str = "nomic-embed-text",
+    ollama_base_url: str = "http://localhost:11434",
+):
+    """
+    임베딩 백엔드를 자동으로 선택합니다.
+
+    우선순위:
+    1. HuggingFaceEmbeddings (sentence-transformers) — API 키 불필요, 로컬 실행
+    2. OllamaEmbeddings — Ollama 서버가 실행 중인 경우 사용 (로컬 개발 환경)
+
+    embed_model이 'nomic-embed-text'처럼 Ollama 전용 모델명일 경우
+    HuggingFace 모드에서는 다국어 지원 모델로 자동 대체합니다.
+    """
+    # ── 1순위: HuggingFaceEmbeddings (sentence-transformers) ─────────────
+    try:
+        from langchain_huggingface import HuggingFaceEmbeddings  # type: ignore
+
+        # Ollama 전용 모델명이면 다국어 지원 sentence-transformer로 대체
+        # MiniLM-L12 (~120MB) 선택 이유:
+        #   - mpnet-base-v2 (~420MB) 대비 메모리 3.5배 절약
+        #   - 한국어 포함 50개 언어 지원, AML 문서 검색 품질 충분
+        #   - 16GB RAM 환경에서 Neo4j + PyTorch 동시 실행 시 OOM 방지
+        hf_model = embed_model
+        if embed_model in ("nomic-embed-text", "mxbai-embed-large", "all-minilm"):
+            hf_model = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+
+        return HuggingFaceEmbeddings(
+            model_name=hf_model,
+            model_kwargs={"device": "cpu"},
+            encode_kwargs={"normalize_embeddings": True},
+        )
+    except ImportError:
+        pass
+
+    # ── 2순위: OllamaEmbeddings (기존 로컬 개발 환경 호환) ─────────────
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        from langchain_community.embeddings import OllamaEmbeddings  # type: ignore
+    return OllamaEmbeddings(
+        model=embed_model,
+        base_url=ollama_base_url,
+    )
 
 
 # 상수
@@ -40,7 +84,7 @@ class KnowledgeBase: # Langchain 기반 RAG 지식베이스 클래스
         self.ollama_base_url = ollama_base_url
 
         # LangChain 컴포넌트 (지연 초기화)
-        self._embeddings: OllamaEmbeddings | None = None
+        self._embeddings = None
         self._vectorstore: LangChainChroma | None = None
 
         # RecursiveCharacterTextSplitter — 한국어 문서에 적합한 구분자 설정
@@ -54,27 +98,51 @@ class KnowledgeBase: # Langchain 기반 RAG 지식베이스 클래스
 
     # 내부 초기화 (지연 로딩)
 
-    def _get_embeddings(self) -> OllamaEmbeddings: #OllamaEmbeddings 인스턴스를 반환(최초 1회 생성)
+    def _get_embeddings(self):
+        """임베딩 인스턴스를 반환합니다 (최초 1회 생성).
+
+        HuggingFaceEmbeddings(sentence-transformers) 우선 사용.
+        미설치 시 OllamaEmbeddings로 자동 폴백합니다.
+        """
         if self._embeddings is None:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", DeprecationWarning)
-                self._embeddings = OllamaEmbeddings(
-                    model=self.embed_model,
-                    base_url=self.ollama_base_url,
-                )
+            self._embeddings = _get_embeddings_backend(
+                embed_model=self.embed_model,
+                ollama_base_url=self.ollama_base_url,
+            )
         return self._embeddings
 
     def _get_vectorstore(self) -> LangChainChroma: # LangChain Chroma 벡터스토어를 반환(최초 1회 생성)
         if self._vectorstore is None:
             chroma_client = chromadb.PersistentClient(path=self.persist_dir)
+            embeddings = self._get_embeddings()
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", DeprecationWarning)
-                self._vectorstore = LangChainChroma(
-                    collection_name=_COLLECTION,
-                    embedding_function=self._get_embeddings(),
-                    client=chroma_client,
-                    collection_metadata={"hnsw:space": "cosine"},
-                )
+                try:
+                    self._vectorstore = LangChainChroma(
+                        collection_name=_COLLECTION,
+                        embedding_function=embeddings,
+                        client=chroma_client,
+                        collection_metadata={"hnsw:space": "cosine"},
+                    )
+                except Exception as e:
+                    # 임베딩 모델 교체로 차원 불일치 발생 시 컬렉션을 초기화하고 재생성
+                    if "dimension" in str(e).lower() or "InvalidDimensionException" in str(type(e)):
+                        print(
+                            "[KnowledgeBase] ⚠️ 임베딩 차원 불일치 감지 — "
+                            "기존 컬렉션을 삭제하고 재빌드합니다."
+                        )
+                        try:
+                            chroma_client.delete_collection(_COLLECTION)
+                        except Exception:
+                            pass
+                        self._vectorstore = LangChainChroma(
+                            collection_name=_COLLECTION,
+                            embedding_function=embeddings,
+                            client=chroma_client,
+                            collection_metadata={"hnsw:space": "cosine"},
+                        )
+                    else:
+                        raise
         return self._vectorstore
 
 
