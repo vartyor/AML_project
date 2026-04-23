@@ -6,6 +6,7 @@ joblib
 shap
 torch
 torch-geometric
+torchvision
 matplotlib
 requests
 PyPDF2
@@ -23,3 +24,5 @@ langchain-community>=0.3.1
 langchain-core>=0.3.0
 # ── 누락 라이브러리 추가 ────────────────────────────────────────────
 pyvis == 0.3.2
+pytz
+python-dateutil

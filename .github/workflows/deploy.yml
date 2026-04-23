@@ -26,6 +26,7 @@ jobs:
       - name: 핵심 의존성 설치 (빠른 검증용)
         run: |
           python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           pip install streamlit pandas numpy xgboost joblib
 
       - name: app.py 임포트 구문 검사
