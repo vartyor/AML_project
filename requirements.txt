@@ -3,6 +3,7 @@ pandas
 numpy
 xgboost
 joblib
+scikit-learn
 shap
 torch
 torch-geometric
