@@ -104,7 +104,8 @@ class TestEmbeddingExtraction:
         x, edge_index, _ = dummy_graph
         with torch.no_grad():
             out = embedding_extractor(x, edge_index)
-        arr = out.numpy()
+        # detach().cpu() 를 먼저 호출해야 CPU-only 빌드에서도 안전하게 변환 가능
+        arr = out.detach().cpu().numpy()
         assert isinstance(arr, np.ndarray)
         assert arr.shape == (5, 16)
 
