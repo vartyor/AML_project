@@ -68,31 +68,34 @@ jobs:
           fetch-depth: 0
           lfs: false
 
-      - name: Git LFS 설치 및 대용량 파일 변환
-        run: |
-          git lfs install
-          git config user.email "action@github.com"
-          git config user.name "GitHub Actions"
+      - name: Git LFS 설치
+        run: git lfs install
 
-          # PDF, 모델 파일을 LFS 오브젝트로 변환
-          git rm --cached knowledge_base/*.pdf 2>/dev/null || true
-          git rm --cached "*.pth" "*.pkl" 2>/dev/null || true
-          git add knowledge_base/ || true
-          git add *.pth *.pkl 2>/dev/null || true
-          git commit -m "ci: convert large files to LFS for HF Spaces" || true
-
-      - name: Hugging Face Spaces 에 push
+      - name: Hugging Face Spaces 에 push (orphan — 히스토리 없이 현재 상태만)
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           HF_USERNAME="Vartyor"
           HF_SPACE_NAME="aml-project"
 
+          git config user.email "action@github.com"
+          git config user.name "GitHub Actions"
+
           git remote add hf \
             https://${HF_USERNAME}:${HF_TOKEN}@huggingface.co/spaces/${HF_USERNAME}/${HF_SPACE_NAME}
 
+          # 히스토리 없는 새 브랜치 생성
+          # → 과거 커밋의 대용량 파일이 전송되지 않음
+          git checkout --orphan hf-deploy
+
+          # .gitattributes 기반으로 LFS 파일 자동 변환하며 스테이징
+          git add -A
+
+          git commit -m "deploy: $(date '+%Y-%m-%d %H:%M:%S')"
+
+          # LFS 오브젝트 먼저 업로드 후 커밋 push
           git lfs push hf --all
-          git push hf main --force
+          git push hf hf-deploy:main --force
 
       - name: 배포 완료 알림
         run: |
