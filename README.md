@@ -3,10 +3,7 @@ title: AML Detection System
 emoji: 🕵️
 colorFrom: blue
 colorTo: purple
-sdk: streamlit
-sdk_version: 1.41.0
-app_file: app.py
-python_version: "3.11"
+sdk: docker
 pinned: false
 ---
 
