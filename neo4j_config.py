@@ -31,7 +31,7 @@ def _get_secret(key: str, default: str) -> str:
 
 NEO4J_URI      = _get_secret("NEO4J_URI",      "bolt://localhost:7687")
 NEO4J_USER     = _get_secret("NEO4J_USERNAME",  "neo4j")
-NEO4J_PASSWORD = _get_secret("NEO4J_PASSWORD",  "qwer1234")
+NEO4J_PASSWORD = _get_secret("NEO4J_PASSWORD",  "")
 
 # LangChain Neo4j용 URL
 NEO4J_URL = NEO4J_URI
@@ -48,12 +48,14 @@ def get_driver():
     """
     from neo4j import GraphDatabase
 
+    # AuraDB(neo4j+s://) 는 TLS 핸드셰이크로 초기 연결이 로컬보다 느리므로
+    # connection_acquisition_timeout 을 30s 로 설정
     driver = GraphDatabase.driver(
         NEO4J_URI,
         auth=(NEO4J_USER, NEO4J_PASSWORD),
         max_connection_pool_size=5,
-        connection_acquisition_timeout=5,
-        liveness_check_timeout=0,
+        connection_acquisition_timeout=30,
+        liveness_check_timeout=2,
     )
     driver.verify_connectivity()
     return driver
@@ -130,7 +132,4 @@ def _print_diagnosis(err: str) -> None:
         print("  3. bolt://localhost:7687 포트 개방 여부 확인")
 
 
-# 직접 실행 시 연결 테스트
-
-if __name__ == "__main__":
-    test_connection()
+# 직접 실행 시 연결 테스

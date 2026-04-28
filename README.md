@@ -1,3 +1,15 @@
+---
+title: AML Detection System
+emoji: 🕵️
+colorFrom: blue
+colorTo: purple
+sdk: streamlit
+sdk_version: 1.41.0
+app_file: app.py
+python_version: "3.11"
+pinned: false
+---
+
 <div align="center">
 
 # 🕵️ GNN + XGBoost 하이브리드 자금세탁 탐지 시스템
@@ -12,7 +24,7 @@ KoFIU 법령 RAG를 기반으로 의심거래보고서(SAR)를 로컬 LLM이 실
 ![PyG](https://img.shields.io/badge/PyTorch_Geometric-GraphSAGE-7A1FA2)
 ![XGBoost](https://img.shields.io/badge/XGBoost-Hybrid-0099CC)
 ![LangChain](https://img.shields.io/badge/LangChain-RAG-1C3C3C?logo=langchain&logoColor=white)
-![Ollama](https://img.shields.io/badge/Ollama-llama3.1-000000?logo=ollama&logoColor=white)
+![Groq](https://img.shields.io/badge/Groq-llama--3.1-F55036?logo=groq&logoColor=white)
 ![Neo4j](https://img.shields.io/badge/Neo4j-GraphRAG-008CC1?logo=neo4j&logoColor=white)
 ![Streamlit](https://img.shields.io/badge/Streamlit-Dashboard-FF4B4B?logo=streamlit&logoColor=white)
 
