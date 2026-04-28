@@ -53,6 +53,9 @@ jobs:
   # ──────────────────────────────────────────────
   # Job 2: Hugging Face Spaces 자동 배포
   #
+  # git push 대신 huggingface_hub.upload_folder 사용
+  # → LFS / Xet 스토리지 문제 없이 파일 직접 업로드
+  #
   # GitHub Secrets 에 HF_TOKEN 등록 필요
   # (HF Settings > Access Tokens > Write 권한)
   # ──────────────────────────────────────────────
@@ -62,40 +65,56 @@ jobs:
     needs: pre-deploy-check
 
     steps:
-      - name: 코드 체크아웃 (전체 히스토리)
+      - name: 코드 체크아웃
         uses: actions/checkout@v4
+
+      - name: Python 설정
+        uses: actions/setup-python@v5
         with:
-          fetch-depth: 0
-          lfs: false
+          python-version: "3.10"
 
-      - name: Git LFS 설치
-        run: git lfs install
+      - name: huggingface_hub 설치
+        run: pip install huggingface_hub
 
-      - name: Hugging Face Spaces 에 push (orphan — 히스토리 없이 현재 상태만)
+      - name: HF Spaces 에 파일 업로드
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          HF_USERNAME="Vartyor"
-          HF_SPACE_NAME="aml-project"
+          python - <<'EOF'
+          import os
+          from huggingface_hub import HfApi
 
-          git config user.email "action@github.com"
-          git config user.name "GitHub Actions"
+          api = HfApi(token=os.environ["HF_TOKEN"])
 
-          git remote add hf \
-            https://${HF_USERNAME}:${HF_TOKEN}@huggingface.co/spaces/${HF_USERNAME}/${HF_SPACE_NAME}
+          # 업로드 제외 패턴 (로컬 전용 파일)
+          ignore_patterns = [
+              ".git/*",
+              ".github/*",
+              ".venv/*",
+              "venv/*",
+              "__pycache__/*",
+              "*.pyc",
+              ".env",
+              ".env.*",
+              "secrets.toml",
+              "dataset/*",
+              "chroma_db/*",
+              "tests/*",
+              "*.pptx",
+              "*.docx",
+              "*.md" if False else None,  # README.md 는 포함
+          ]
+          ignore_patterns = [p for p in ignore_patterns if p]
 
-          # 히스토리 없는 새 브랜치 생성
-          # → 과거 커밋의 대용량 파일이 전송되지 않음
-          git checkout --orphan hf-deploy
-
-          # .gitattributes 기반으로 LFS 파일 자동 변환하며 스테이징
-          git add -A
-
-          git commit -m "deploy: $(date '+%Y-%m-%d %H:%M:%S')"
-
-          # LFS 오브젝트 먼저 업로드 후 커밋 push
-          git lfs push hf --all
-          git push hf hf-deploy:main --force
+          api.upload_folder(
+              folder_path=".",
+              repo_id="Vartyor/aml-project",
+              repo_type="space",
+              ignore_patterns=ignore_patterns,
+              commit_message=f"deploy: {os.environ.get('GITHUB_SHA', 'manual')[:7]}",
+          )
+          print("HF Spaces 업로드 완료")
+          EOF
 
       - name: 배포 완료 알림
         run: |
