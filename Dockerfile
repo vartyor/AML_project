@@ -74,6 +74,7 @@ COPY neo4j_config.py .
 COPY NanumGothic*.ttf ./
 COPY fraud_model.pkl .
 COPY gnn_model.pth .
+COPY model/ ./model/
 
 # Streamlit 설정
 RUN mkdir -p /app/.streamlit
