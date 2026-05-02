@@ -87,21 +87,32 @@ def _build_messages(
     )
 
     # ── user: 참조 자료 + 분석 데이터 ───────────────────────────────
+    # Groq 무료 티어 TPM 제한(6,000) 대비 컨텍스트 길이 제한
+    # 한국어 1자 ≈ 1.5~2 토큰 기준으로 보수적으로 잡음
+    _MAX_RAG_CHARS   = 800   # ≈ 400~500 토큰
+    _MAX_GRAPH_CHARS = 400   # ≈ 200~250 토큰
+
     user_parts: list[str] = []
 
     if rag_context.strip():
+        truncated_rag = rag_context[:_MAX_RAG_CHARS]
+        if len(rag_context) > _MAX_RAG_CHARS:
+            truncated_rag += "\n...(이하 생략)"
         user_parts.append(
             "【법령·지침 참조 자료 (KoFIU 공식 문서)】\n"
             "아래 법령·지침을 보고서 작성의 근거로 활용하십시오.\n\n"
-            + rag_context
+            + truncated_rag
         )
 
     if graph_context.strip():
+        truncated_graph = graph_context[:_MAX_GRAPH_CHARS]
+        if len(graph_context) > _MAX_GRAPH_CHARS:
+            truncated_graph += "\n...(이하 생략)"
         user_parts.append(
             "【거래 네트워크 구조 분석 결과 (Neo4j GraphRAG)】\n"
             "아래는 해당 계좌의 실제 거래 그래프에서 도출된 네트워크 구조 정보입니다.\n"
             "II 섹션(의심 징후)과 III 섹션(위험 평가)에 구체적인 수치와 경로로 반영하십시오.\n\n"
-            + graph_context
+            + truncated_graph
         )
 
     user_parts.append("[분석 데이터]\n" + json_data)
@@ -254,7 +265,7 @@ def stream_ai_report(
         stream=True,
         temperature=0.1,
         seed=42,
-        max_tokens=4096,
+        max_tokens=2048,
     )
 
     for chunk in stream:
@@ -302,7 +313,7 @@ def generate_ai_report(
             stream=False,
             temperature=0.1,
             seed=42,
-            max_tokens=4096,
+            max_tokens=2048,
         )
 
         raw = response.choices[0].message.content or "보고서 내용 생성 실패"
