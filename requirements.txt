@@ -12,6 +12,7 @@ torchvision
 matplotlib
 requests
 PyPDF2
+fpdf2
 chromadb
 # ── LLM: Groq API (SAR 보고서 생성) ───────────────────────────────
 groq>=0.9.0

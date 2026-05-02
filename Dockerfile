@@ -39,6 +39,7 @@ RUN pip install --no-cache-dir \
     matplotlib \
     requests \
     PyPDF2 \
+    fpdf2 \
     pytz \
     python-dateutil \
     "pyvis==0.3.2"
