@@ -17,23 +17,50 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-# pip 업그레이드
 RUN pip install --upgrade pip
 
-# CPU-only PyTorch (이미지 크기 최소화)
+# ── 1단계: CPU-only PyTorch (별도 인덱스 URL 필요) ────────────────────
 RUN pip install --no-cache-dir \
     torch==2.4.0+cpu \
     torchvision==0.19.0+cpu \
     --index-url https://download.pytorch.org/whl/cpu
 
-# torch-geometric
 RUN pip install --no-cache-dir torch-geometric==2.5.2
 
-# 나머지 의존성 (COPY로 직접 복사 → Xet 마운트 우회)
-COPY requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt
+# ── 2단계: 기본 ML/데이터 패키지 ──────────────────────────────────────
+RUN pip install --no-cache-dir \
+    streamlit==1.41.0 \
+    pandas \
+    numpy \
+    xgboost \
+    joblib \
+    scikit-learn \
+    shap \
+    matplotlib \
+    requests \
+    PyPDF2 \
+    pytz \
+    python-dateutil \
+    "pyvis==0.3.2"
 
-# 앱 소스 복사
+# ── 3단계: LLM / RAG ──────────────────────────────────────────────────
+RUN pip install --no-cache-dir \
+    "groq>=0.9.0" \
+    chromadb
+
+RUN pip install --no-cache-dir \
+    "sentence-transformers>=2.6.0" \
+    "langchain-huggingface>=0.0.3" \
+    "langchain-text-splitters>=0.2.0"
+
+# ── 4단계: GraphRAG (Neo4j + LangChain) ───────────────────────────────
+RUN pip install --no-cache-dir \
+    "neo4j>=5.0.0" \
+    "langchain-neo4j>=0.3.0" \
+    "langchain-community>=0.3.1" \
+    "langchain-core>=0.3.0"
+
+# ── 앱 소스 복사 ──────────────────────────────────────────────────────
 COPY app.py .
 COPY analysis/ ./analysis/
 COPY loaders/ ./loaders/
@@ -44,8 +71,6 @@ COPY knowledge_base/ ./knowledge_base/
 COPY tools/ ./tools/
 COPY neo4j_config.py .
 COPY NanumGothic*.ttf ./
-
-# 모델 파일
 COPY fraud_model.pkl .
 COPY gnn_model.pth .
 
@@ -53,18 +78,15 @@ COPY gnn_model.pth .
 RUN mkdir -p /app/.streamlit
 COPY .streamlit/ ./.streamlit/
 
-# HF Spaces non-root 유저 설정
+# HF Spaces non-root 유저
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser
 
-# 포트 (HF Spaces Docker SDK 필수)
 EXPOSE 7860
 
-# 헬스체크
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
     CMD curl -f http://localhost:7860/_stcore/health || exit 1
 
-# 실행
 ENTRYPOINT ["streamlit", "run", "app.py", \
     "--server.port=7860", \
     "--server.address=0.0.0.0", \
